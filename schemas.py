@@ -63,7 +63,7 @@ class ProfileSchema(Schema):
         return data
 
     @validates("financial_goals")
-    def validate_goals_not_whitespace(self, value):
+    def validate_goals_not_whitespace(self, value, **kwargs):
         if not value.strip():
             raise ValidationError("financial_goals must not be blank.")
 
@@ -101,7 +101,7 @@ class ChatSchema(Schema):
         return data
 
     @validates("query")
-    def validate_query_not_blank(self, value):
+    def validate_query_not_blank(self, value, **kwargs):
         if not value.strip():
             raise ValidationError("query must not be blank.")
 
@@ -131,7 +131,7 @@ class GoalPlanSchema(Schema):
 
 # ── Singleton instances (import and reuse these) ───────────────────────────
 
-profile_schema        = ProfileSchema()
+profile_schema         = ProfileSchema()
 generate_report_schema = GenerateReportSchema()
-chat_schema           = ChatSchema()
-goal_plan_schema      = GoalPlanSchema()
+chat_schema            = ChatSchema()
+goal_plan_schema       = GoalPlanSchema()
