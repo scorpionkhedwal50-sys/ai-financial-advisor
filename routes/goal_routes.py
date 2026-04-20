@@ -1,8 +1,11 @@
 import logging
 from flask import Blueprint, request, jsonify
+from marshmallow import ValidationError
+
+from extensions import limiter
+from schemas import goal_plan_schema
 from services.goal_service import calculate_goal_plan
 from routes.user_routes import get_user_by_id
-from app import limiter
 
 logger  = logging.getLogger(__name__)
 goal_bp = Blueprint("goal", __name__)
@@ -40,39 +43,32 @@ def goal_plan():
       200:
         description: Goal plan with SIP amounts at 3 CAGR scenarios
       400:
-        description: Missing or invalid fields
-      404:
-        description: User profile not found
+        description: Validation error or user not found
+      500:
+        description: Calculation error
     """
-    data = request.get_json(silent=True)
-    if not data:
+    raw = request.get_json(silent=True)
+    if not raw:
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    user_id = data.get("user_id")
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
+    try:
+        data = goal_plan_schema.load(raw)
+    except ValidationError as exc:
+        logger.warning("goal_plan: validation failed — %s", exc.messages)
+        return jsonify({"error": "Validation failed", "details": exc.messages}), 400
 
-    profile = get_user_by_id(int(user_id))
+    user_id = data["user_id"]
+    profile = get_user_by_id(user_id)
     if not profile:
         return jsonify({"error": f"User profile #{user_id} not found"}), 404
 
-    if "target_amount" not in data or "time_years" not in data:
-        return jsonify({"error": "target_amount and time_years are required"}), 400
-
-    try:
-        target = float(data["target_amount"])
-        years  = float(data["time_years"])
-    except (ValueError, TypeError):
-        return jsonify({"error": "target_amount and time_years must be numbers"}), 400
-
-    if target <= 0:
-        return jsonify({"error": "target_amount must be greater than 0"}), 400
-    if years <= 0:
-        return jsonify({"error": "time_years must be greater than 0"}), 400
-
     status, result = calculate_goal_plan(profile, data)
     if not status:
-        logger.error("goal_plan: calculation failed for user %s — %s", user_id, result)
+        logger.error("goal_plan: calculation failed for user #%d — %s", user_id, result)
         return jsonify({"error": result}), 500
 
+    logger.info(
+        "goal_plan: plan calculated for user #%d — target ₹%.0f in %.1f yr(s), feasible=%s",
+        user_id, data["target_amount"], data["time_years"], result.get("feasible"),
+    )
     return jsonify(result)

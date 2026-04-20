@@ -1,45 +1,49 @@
+import logging
 from flask import Blueprint, request, jsonify
-from services.profiling_service import create_user_profile
+from marshmallow import ValidationError
+
+from schemas import profile_schema
 from database.db import get_connection
 
-user_bp = Blueprint('user', __name__)
+logger  = logging.getLogger(__name__)
+user_bp = Blueprint("user", __name__)
 
 
-# ── helpers (imported by other route modules) ──────────────────────────────
+# ── DB helpers (imported by other route modules) ───────────────────────────
 
 def get_latest_user():
     """Return the most recently created user as a plain dict, or None."""
-    conn = get_connection()
+    conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users ORDER BY id DESC LIMIT 1")
-    user = cursor.fetchone()
+    user   = cursor.fetchone()
     conn.close()
     return dict(user) if user else None
 
 
 def get_user_by_id(user_id: int):
     """Return a specific user as a plain dict, or None."""
-    conn = get_connection()
+    conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-    user = cursor.fetchone()
+    user   = cursor.fetchone()
     conn.close()
     return dict(user) if user else None
 
 
 def get_all_users():
     """Return all users ordered by id ascending."""
-    conn = get_connection()
+    conn   = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users ORDER BY id ASC")
-    rows = cursor.fetchall()
+    rows   = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-# ── routes ─────────────────────────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────
 
-@user_bp.route('/users', methods=['GET'])
+@user_bp.route("/users", methods=["GET"])
 def list_users():
     """
     List all saved user profiles.
@@ -54,7 +58,7 @@ def list_users():
     return jsonify({"users": users})
 
 
-@user_bp.route('/profile', methods=['POST'])
+@user_bp.route("/profile", methods=["POST"])
 def create_profile():
     """
     Create User Profile
@@ -86,47 +90,73 @@ def create_profile():
             financial_goals:
               type: string
               example: Buy a car in 2 years
+            debt_emi:
+              type: number
+              example: 5000
+              description: Optional — total monthly EMI payments
     responses:
-      200:
+      201:
         description: Profile created successfully
       400:
-        description: Invalid input
+        description: Validation error
+      500:
+        description: Database error
     """
-    data = request.get_json()
+    raw = request.get_json(silent=True)
+    if not raw:
+        return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    status, result = create_user_profile(data)
-    if not status:
-        return jsonify({"error": result}), 400
+    # ── Validate & deserialise ─────────────────────────────────────────────
+    try:
+        data = profile_schema.load(raw)
+    except ValidationError as exc:
+        logger.warning("create_profile: validation failed — %s", exc.messages)
+        return jsonify({"error": "Validation failed", "details": exc.messages}), 400
 
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO users (age, income, expenses, savings, risk_appetite, financial_goals)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        result["age"],
-        result["income"],
-        result["expenses"],
-        result["savings"],
-        result["risk_appetite"],
-        result["financial_goals"],
-    ))
-    conn.commit()
-    user_id = cursor.lastrowid
-    conn.close()
+    if data["income"] > 0 and data["expenses"] > data["income"]:
+        logger.warning(
+            "create_profile: expenses (%.0f) exceed income (%.0f)",
+            data["expenses"], data["income"],
+        )
 
+    # ── Persist ───────────────────────────────────────────────────────────
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO users
+                (age, income, expenses, savings, risk_appetite, financial_goals)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["age"],
+                data["income"],
+                data["expenses"],
+                data["savings"],
+                data["risk_appetite"],
+                data["financial_goals"],
+            ),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+        conn.close()
+    except Exception:
+        logger.exception("create_profile: DB insert failed")
+        return jsonify({"error": "Database error — profile could not be saved"}), 500
+
+    logger.info("create_profile: new profile #%d created", user_id)
     return jsonify({
         "message": "Profile saved successfully",
         "user_id": user_id,
-        "profile": result,
-    })
+        "profile": data,
+    }), 201
 
 
-@user_bp.route('/profile/<int:user_id>', methods=['DELETE'])
-def delete_profile(user_id):
+@user_bp.route("/profile/<int:user_id>", methods=["DELETE"])
+def delete_profile(user_id: int):
     """
     Delete a user profile and their associated report.
-    Both the users row and the reports row (if any) are removed atomically.
     ---
     tags:
       - User
@@ -143,37 +173,28 @@ def delete_profile(user_id):
       500:
         description: Deletion failed
     """
-    conn = get_connection()
+    conn   = get_connection()
     cursor = conn.cursor()
 
-    # Check the user exists first
     cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
     if not cursor.fetchone():
         conn.close()
         return jsonify({"error": "Profile not found"}), 404
 
     try:
-        # Delete the report first (foreign key child), then the user (parent)
-        cursor.execute("DELETE FROM reports WHERE user_id = ?", (user_id,))
-        cursor.execute("DELETE FROM users   WHERE id      = ?", (user_id,))
+        cursor.execute("DELETE FROM reports      WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM users        WHERE id      = ?", (user_id,))
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
         conn.close()
-        return jsonify({"error": f"Deletion failed: {e}"}), 500
+        logger.exception("delete_profile: DB delete failed for user #%d", user_id)
+        return jsonify({"error": "Deletion failed — database error"}), 500
 
     conn.close()
-
-    # Also remove the on-disk PDF if it still exists
-    import os
-    pdf_path = os.path.join(os.getcwd(), f"financial_report_user_{user_id}.pdf")
-    try:
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-    except Exception:
-        pass   # non-fatal — DB is already clean
-
+    logger.info("delete_profile: profile #%d deleted", user_id)
     return jsonify({
-        "message": f"Profile #{user_id} deleted successfully",
-        "deleted_user_id": user_id,
+        "message":          f"Profile #{user_id} deleted successfully",
+        "deleted_user_id":  user_id,
     })

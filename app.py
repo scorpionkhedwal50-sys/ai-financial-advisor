@@ -1,10 +1,9 @@
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from flasgger import Swagger
 
+from extensions import limiter
 from routes.user_routes import user_bp
 from routes.report_routes import report_bp
 from routes.chat_routes import chat_bp
@@ -19,16 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Rate limiter (shared across the app) ──────────────────────────────────
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=["200 per day", "60 per hour"],
-    storage_uri=Config.RATELIMIT_STORAGE_URI,
-)
-
 
 def create_app():
-    Config.validate()          # fail fast if env vars are missing
+    Config.validate()
 
     app = Flask(__name__)
     CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -42,7 +34,6 @@ def create_app():
     # ── API key auth middleware ────────────────────────────────────────────
     @app.before_request
     def require_api_key():
-        # Skip auth for Swagger UI, the home route, and preflight CORS requests
         if request.method == "OPTIONS":
             return
         open_paths = ("/", "/apidocs/", "/apispec.json", "/flasgger_static")
