@@ -227,20 +227,55 @@ function ProfileForm({ onCreated, showToast }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const submit = async () => {
+    // ── FIX 1: Validate required numeric fields before sending ─────────────
+    if (!form.age || !form.income || !form.expenses || !form.savings) {
+      showToast("Please fill in all required fields", "error");
+      return;
+    }
+    if (!form.financial_goals.trim()) {
+      showToast("Please enter your financial goals", "error");
+      return;
+    }
+
     setLoading(true);
     try {
+      // ── FIX 2: Build body cleanly — never send debt_emi as an empty string.
+      // The backend ProfileSchema treats "" as an invalid Float and rejects it.
+      // Only include debt_emi when the user actually typed a positive number.
       const body = {
-        ...form,
-        age: +form.age,
-        income: +form.income,
-        expenses: +form.expenses,
-        savings: +form.savings,
+        age:             parseInt(form.age, 10),
+        income:          parseFloat(form.income),
+        expenses:        parseFloat(form.expenses),
+        savings:         parseFloat(form.savings),
+        risk_appetite:   form.risk_appetite,
+        financial_goals: form.financial_goals.trim(),
       };
-      if (form.debt_emi) body.debt_emi = +form.debt_emi;
-      const res = await fetch(`${API_BASE}/profile`, { method: "POST", headers, body: JSON.stringify(body) });
+
+      // Append debt_emi only when it's a valid, non-zero number
+      const parsedDebtEmi = parseFloat(form.debt_emi);
+      if (form.debt_emi.trim() !== "" && !isNaN(parsedDebtEmi) && parsedDebtEmi >= 0) {
+        body.debt_emi = parsedDebtEmi;
+      }
+
+      const res = await fetch(`${API_BASE}/profile`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      // ── FIX 3: Always parse JSON before checking res.ok so error details
+      // from the backend are surfaced rather than swallowed.
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to create profile");
+      if (!res.ok) {
+        // Surface validation details when present
+        const msg = data.details
+          ? Object.values(data.details).flat().join("; ")
+          : data.error || "Failed to create profile";
+        throw new Error(msg);
+      }
+
       showToast("Profile created successfully", "success");
+      // ── FIX 4: Backend returns user_id at top level (not nested)
       onCreated(data.user_id);
     } catch (e) {
       showToast(e.message, "error");
@@ -345,12 +380,15 @@ function UserSelector({ activeId, onSelect, showToast, onDeleted }) {
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
+    setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/users`, { headers });
+      // ── FIX 5: Guard against non-OK responses before parsing
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json();
       setUsers(data.users || []);
-    } catch {
-      showToast("Could not load users", "error");
+    } catch (e) {
+      showToast(`Could not load users: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
@@ -362,13 +400,17 @@ function UserSelector({ activeId, onSelect, showToast, onDeleted }) {
     e.stopPropagation();
     try {
       const res = await fetch(`${API_BASE}/profile/${id}`, { method: "DELETE", headers });
-      if (!res.ok) throw new Error("Failed to delete");
+      // ── FIX 6: Parse error body for deletion failures
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to delete");
+      }
       showToast("Profile deleted", "success");
       if (activeId === id) onSelect(null);
       setUsers(u => u.filter(x => x.id !== id));
       onDeleted?.();
-    } catch {
-      showToast("Deletion failed", "error");
+    } catch (e) {
+      showToast(e.message, "error");
     }
   };
 
@@ -424,14 +466,17 @@ function ReportPanel({ userId, showToast }) {
   useEffect(() => {
     const load = async () => {
       setFetching(true);
+      setReport(null); // ── FIX 7: Clear stale report when userId changes
       try {
         const res = await fetch(`${API_BASE}/report/${userId}`, { headers });
         if (res.ok) {
           const d = await res.json();
           setReport(d);
         }
-      } catch {}
-      finally {
+        // 404 is expected (no report yet) — not an error worth toasting
+      } catch (e) {
+        showToast("Could not load report", "error");
+      } finally {
         setFetching(false);
       }
     };
@@ -442,11 +487,19 @@ function ReportPanel({ userId, showToast }) {
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/generate-report`, {
-        method: "POST", headers, body: JSON.stringify({ user_id: userId }),
+        method: "POST",
+        headers,
+        body: JSON.stringify({ user_id: userId }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
-      setReport(data);
+      if (!res.ok) {
+        const msg = data.details
+          ? Object.values(data.details).flat().join("; ")
+          : data.error || "Failed to generate report";
+        throw new Error(msg);
+      }
+      // ── FIX 8: Backend returns { user_id, health, ai_report } — map correctly
+      setReport({ health: data.health, ai_report: data.ai_report });
       showToast("Report generated", "success");
     } catch (e) {
       showToast(e.message, "error");
@@ -456,7 +509,22 @@ function ReportPanel({ userId, showToast }) {
   };
 
   const download = () => {
-    window.open(`${API_BASE}/download-report/${userId}`, "_blank");
+    // ── FIX 9: Download must include the API key header — use fetch + blob,
+    // since window.open cannot set custom headers and the backend requires X-API-Key.
+    fetch(`${API_BASE}/download-report/${userId}`, { headers })
+      .then(res => {
+        if (!res.ok) throw new Error("No report to download");
+        return res.blob();
+      })
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a   = document.createElement("a");
+        a.href     = url;
+        a.download = `financial_report_profile_${userId}.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(e => showToast(e.message, "error"));
   };
 
   if (fetching) return <div style={{ color: "#3d4455", fontSize: 13 }}>Loading report...</div>;
@@ -541,9 +609,11 @@ function ReportPanel({ userId, showToast }) {
 
           {/* Stats */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            <StatCard label="Savings Rate"   value={`${report.health?.savings_ratio || 0}%`} />
-            <StatCard label="Expense Ratio"  value={`${report.health?.expense_ratio || 0}%`} />
-            <StatCard label="Emergency Fund" value={`${report.health?.emg_months || 0}mo`} />
+            {/* ── FIX 10: Backend already returns savings_ratio / expense_ratio
+                as percentage strings (e.g. 37.5), not decimals. Display directly. */}
+            <StatCard label="Savings Rate"   value={`${report.health?.savings_ratio ?? 0}%`} />
+            <StatCard label="Expense Ratio"  value={`${report.health?.expense_ratio ?? 0}%`} />
+            <StatCard label="Emergency Fund" value={`${report.health?.emg_months ?? 0}mo`} />
           </div>
 
           {/* Insights */}
@@ -601,12 +671,19 @@ function ChatPanel({ userId, showToast }) {
 
   useEffect(() => {
     const load = async () => {
+      setFetching(true);
+      setMessages([]); // ── FIX 11: Clear stale messages when switching users
       try {
         const res  = await fetch(`${API_BASE}/chat/history/${userId}`, { headers });
+        // ── FIX 12: Guard against non-OK before parsing
+        if (!res.ok) throw new Error(`Failed to load history: ${res.status}`);
         const data = await res.json();
-        if (res.ok) setMessages(data.history || []);
-      } catch {}
-      finally { setFetching(false); }
+        setMessages(data.history || []);
+      } catch (e) {
+        showToast(e.message, "error");
+      } finally {
+        setFetching(false);
+      }
     };
     load();
   }, [userId]);
@@ -622,9 +699,19 @@ function ChatPanel({ userId, showToast }) {
     setMessages(m => [...m, { role: "user", message: q }]);
     setLoading(true);
     try {
-      const res  = await fetch(`${API_BASE}/chat`, { method: "POST", headers, body: JSON.stringify({ user_id: userId, query: q }) });
+      const res  = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ user_id: userId, query: q }),
+      });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
+      if (!res.ok) {
+        const msg = data.details
+          ? Object.values(data.details).flat().join("; ")
+          : data.error || "Failed to send message";
+        throw new Error(msg);
+      }
+      // ── FIX 13: Backend returns { query, response } — use data.response
       setMessages(m => [...m, { role: "ai", message: data.response }]);
     } catch (e) {
       showToast(e.message, "error");
@@ -636,11 +723,19 @@ function ChatPanel({ userId, showToast }) {
 
   const clearHistory = async () => {
     try {
-      await fetch(`${API_BASE}/chat/history/${userId}`, { method: "DELETE", headers });
+      const res = await fetch(`${API_BASE}/chat/history/${userId}`, {
+        method: "DELETE",
+        headers,
+      });
+      // ── FIX 14: Check response before assuming success
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to clear history");
+      }
       setMessages([]);
       showToast("Chat cleared", "success");
-    } catch {
-      showToast("Failed to clear", "error");
+    } catch (e) {
+      showToast(e.message, "error");
     }
   };
 
@@ -742,12 +837,34 @@ function GoalPanel({ userId, showToast }) {
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
+    // ── FIX 15: Validate goal fields before sending (backend rejects 0 / empty)
+    const amount = parseFloat(form.target_amount);
+    const years  = parseFloat(form.time_years);
+
+    if (!form.target_amount || isNaN(amount) || amount <= 0) {
+      showToast("Please enter a valid target amount", "error");
+      return;
+    }
+    if (!form.time_years || isNaN(years) || years < 0.5) {
+      showToast("Time horizon must be at least 0.5 years (6 months)", "error");
+      return;
+    }
+
     setLoading(true);
     try {
-      const body = { user_id: userId, target_amount: +form.target_amount, time_years: +form.time_years };
-      const res  = await fetch(`${API_BASE}/goal-plan`, { method: "POST", headers, body: JSON.stringify(body) });
+      const body = { user_id: userId, target_amount: amount, time_years: years };
+      const res  = await fetch(`${API_BASE}/goal-plan`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed");
+      if (!res.ok) {
+        const msg = data.details
+          ? Object.values(data.details).flat().join("; ")
+          : data.error || "Failed to calculate plan";
+        throw new Error(msg);
+      }
       setResult(data);
     } catch (e) {
       showToast(e.message, "error");
@@ -859,10 +976,10 @@ function GoalPanel({ userId, showToast }) {
 
 /* ─── MAIN APP ───────────────────────────────────────────── */
 export default function FinancialAdvisor() {
-  const [activeTab, setActiveTab]     = useState("profile");
+  const [activeTab, setActiveTab]       = useState("profile");
   const [activeUserId, setActiveUserId] = useState(null);
-  const [toasts, setToasts]           = useState([]);
-  const [refreshKey, setRefreshKey]   = useState(0);
+  const [toasts, setToasts]             = useState([]);
+  const [refreshKey, setRefreshKey]     = useState(0);
 
   const showToast = (message, type = "success") => {
     const id = Date.now();
@@ -956,7 +1073,6 @@ export default function FinancialAdvisor() {
                   Profile #{activeUserId} active
                 </div>
               )}
-              {/* New Profile button in header */}
               <button
                 onClick={() => setActiveTab("profile")}
                 style={{
