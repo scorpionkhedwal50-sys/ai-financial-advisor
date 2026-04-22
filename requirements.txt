@@ -2,8 +2,7 @@ flask
 flask-cors
 flask-limiter
 python-dotenv
-google-generativeai
+openai
 requests
 reportlab
 flasgger
-marshmallow
