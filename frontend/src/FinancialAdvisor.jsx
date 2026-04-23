@@ -792,23 +792,54 @@ function ChatPanel({ userId, userGoal, showToast }) {
   );
 }
 
-/* ─── GOAL PANEL ─────────────────────────────────────────── */
+/* ─── FEASIBILITY RING ───────────────────────────────────── */
+function FeasibilityRing({ score, label }) {
+  const r      = 52, cx = 64, cy = 64;
+  const circ   = 2 * Math.PI * r;
+  const offset = circ - (score / 100) * circ;
+  const color  = score >= 75 ? "#10b981" : score >= 50 ? "#f59e0b" : "#ef4444";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+      <svg width="128" height="128" viewBox="0 0 128 128">
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth="8"
+          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+          transform="rotate(-90 64 64)"
+          style={{ transition: "stroke-dashoffset 1s cubic-bezier(0.16,1,0.3,1)" }}
+        />
+        <text x={cx} y={cy - 6} textAnchor="middle" fill={color} fontSize="26" fontWeight="700" fontFamily="'Sora', sans-serif">{score}</text>
+        <text x={cx} y={cy + 14} textAnchor="middle" fill="#5a6070" fontSize="11" fontFamily="'DM Sans', sans-serif">/100</text>
+      </svg>
+      <span style={{ fontSize: 11, color, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>{label}</span>
+    </div>
+  );
+}
+
+/* ─── GOAL FEASIBILITY SIMULATOR ────────────────────────── */
 function GoalPanel({ userId, userGoal, showToast }) {
-  const [form, setForm]       = useState({ target_amount: "", time_years: "" });
+  const [form, setForm]       = useState({ goal_name: "", target_amount: "", time_years: "" });
   const [result, setResult]   = useState(null);
   const [loading, setLoading] = useState(false);
+
+  const canSubmit = form.target_amount && form.time_years && !loading;
 
   const submit = async () => {
     const amount = parseFloat(form.target_amount);
     const years  = parseFloat(form.time_years);
-    if (!form.target_amount || isNaN(amount) || amount <= 0) { showToast("Please enter a valid target amount", "error"); return; }
-    if (!form.time_years || isNaN(years) || years < 0.5) { showToast("Time horizon must be at least 0.5 years", "error"); return; }
+    if (!form.target_amount || isNaN(amount) || amount <= 0) { showToast("Please enter a valid goal amount", "error"); return; }
+    if (!form.time_years || isNaN(years) || years < 0.5) { showToast("Target horizon must be at least 0.5 years", "error"); return; }
     setLoading(true);
     try {
-      const res  = await fetch(`${API_BASE}/goal-plan`, { method: "POST", headers, body: JSON.stringify({ user_id: userId, target_amount: amount, time_years: years }) });
+      const body = {
+        user_id:       userId,
+        goal_name:     form.goal_name.trim() || "My Goal",
+        target_amount: amount,
+        time_years:    years,
+      };
+      const res  = await fetch(`${API_BASE}/goal-plan`, { method: "POST", headers, body: JSON.stringify(body) });
       const data = await res.json();
       if (!res.ok) {
-        const msg = data.details ? Object.values(data.details).flat().join("; ") : data.error || "Failed to calculate plan";
+        const msg = data.details ? Object.values(data.details).flat().join("; ") : data.error || "Simulation failed";
         throw new Error(msg);
       }
       setResult(data);
@@ -819,61 +850,171 @@ function GoalPanel({ userId, userGoal, showToast }) {
     }
   };
 
+  const fScore = result?.feasibility_score ?? 0;
+  const fColor = fScore >= 75 ? "#10b981" : fScore >= 50 ? "#f59e0b" : "#ef4444";
+
   return (
     <div>
+      {/* ── Header ── */}
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, color: "#e8eaf0", fontFamily: "'Sora', sans-serif", letterSpacing: "-0.02em" }}>Goal Planner</h2>
-        {/* FIX: Show goal as subtitle */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "linear-gradient(135deg, #C8A96E, #a8894e)" }} />
+          <span style={{ fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "#C8A96E", fontWeight: 600 }}>Simulation Layer</span>
+        </div>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, color: "#e8eaf0", fontFamily: "'Sora', sans-serif", letterSpacing: "-0.02em" }}>
+          Goal Feasibility Simulator
+        </h2>
         <p style={{ margin: "4px 0 0", color: "#5a6070", fontSize: 13 }}>{userGoal || `Profile #${userId}`}</p>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-        <InputField label="Target Amount (₹)" type="number" value={form.target_amount} onChange={v => setForm(f => ({ ...f, target_amount: v }))} placeholder="500000" />
-        <InputField label="Time Horizon (years)" type="number" value={form.time_years} onChange={v => setForm(f => ({ ...f, time_years: v }))} placeholder="5" />
+
+      {/* ── Input form ── */}
+      <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+        <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5a6070", marginBottom: 14, fontWeight: 500 }}>Scenario Parameters</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          <InputField
+            label="Scenario Name"
+            type="text"
+            value={form.goal_name}
+            onChange={v => setForm(f => ({ ...f, goal_name: v }))}
+            placeholder="e.g. Car Purchase"
+          />
+          <InputField
+            label="Goal Amount (₹)"
+            type="number"
+            value={form.target_amount}
+            onChange={v => setForm(f => ({ ...f, target_amount: v }))}
+            placeholder="500000"
+          />
+          <InputField
+            label="Target Horizon (Years)"
+            type="number"
+            value={form.time_years}
+            onChange={v => setForm(f => ({ ...f, time_years: v }))}
+            placeholder="3"
+          />
+        </div>
       </div>
-      <button onClick={submit} disabled={loading || !form.target_amount || !form.time_years}
-        style={{ width: "100%", padding: "11px 24px", background: (loading || !form.target_amount || !form.time_years) ? "rgba(200,169,110,0.2)" : "linear-gradient(135deg, #C8A96E, #a8894e)", border: "none", borderRadius: 8, color: "#0c0f14", fontSize: 14, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", cursor: (loading || !form.target_amount || !form.time_years) ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-        {loading ? <><Spinner size={16} /> Calculating...</> : <><span>Calculate Plan</span><Icon.ArrowRight size={16} /></>}
+
+      <button onClick={submit} disabled={!canSubmit}
+        style={{ width: "100%", padding: "12px 24px", background: canSubmit ? "linear-gradient(135deg, #C8A96E, #a8894e)" : "rgba(200,169,110,0.2)", border: "none", borderRadius: 8, color: "#0c0f14", fontSize: 14, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", cursor: canSubmit ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, letterSpacing: "0.01em" }}>
+        {loading ? <><Spinner size={16} /> Running Simulation...</> : <><Icon.Target size={16} /><span>Run Feasibility Simulation</span></>}
       </button>
 
+      {/* ── Results ── */}
       {result && (
-        <div style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ padding: "14px 18px", borderRadius: 10, background: result.feasible ? "rgba(16,185,129,0.08)" : "rgba(245,158,11,0.08)", border: `1px solid ${result.feasible ? "rgba(16,185,129,0.2)" : "rgba(245,158,11,0.2)"}` }}>
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, color: result.feasible ? "#10b981" : "#f59e0b", marginBottom: 5 }}>
-              {result.feasible ? "✓ Goal Achievable" : "! Gap Detected"}
-            </div>
-            <div style={{ fontSize: 13, color: "#8a909e", lineHeight: "1.5" }}>{result.message}</div>
-          </div>
+        <div style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 16 }}>
 
-          <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 18 }}>
-            <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5a6070", marginBottom: 14, fontWeight: 500 }}>Required Monthly SIP</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-              {[
-                ["Conservative", result.sip_conservative, result.cagr_conservative, "#6ee7b7"],
-                ["Moderate",     result.sip_moderate,     result.cagr_moderate,     "#C8A96E"],
-                ["Aggressive",   result.sip_aggressive,   result.cagr_aggressive,   "#f87171"],
-              ].map(([label, sip, cagr, color]) => (
-                <div key={label} style={{ textAlign: "center", padding: "12px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" }}>
-                  <div style={{ fontSize: 10, color: "#5a6070", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color, fontFamily: "'Sora', sans-serif" }}>₹{(sip || 0).toLocaleString()}</div>
-                  <div style={{ fontSize: 10, color: "#3d4455", marginTop: 3 }}>@ {cagr} CAGR</div>
+          {/* Feasibility Score + Verdict */}
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 20, alignItems: "center", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: 20 }}>
+            <FeasibilityRing score={result.feasibility_score} label={result.feasibility_label} />
+            <div>
+              <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#5a6070", marginBottom: 6, fontWeight: 500 }}>
+                {result.goal_name}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: fColor, fontFamily: "'Sora', sans-serif", marginBottom: 8 }}>
+                {result.feasible ? "✓ Goal Achievable" : "⚡ Gap Detected"}
+              </div>
+              <div style={{ fontSize: 13, color: "#7a8090", lineHeight: 1.6 }}>
+                {result.scenario_message}
+              </div>
+              {result.recommended_timeline && !result.feasible && (
+                <div style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(200,169,110,0.08)", border: "1px solid rgba(200,169,110,0.2)", borderRadius: 6, padding: "5px 10px" }}>
+                  <span style={{ fontSize: 11, color: "#C8A96E", fontWeight: 600 }}>Achievable in</span>
+                  <span style={{ fontSize: 13, color: "#e8d5a8", fontWeight: 700 }}>{result.recommended_timeline}</span>
+                  <span style={{ fontSize: 11, color: "#5a6070" }}>at current savings rate</span>
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
+          {/* Gap Analysis */}
+          <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5a6070", marginBottom: 14, fontWeight: 500 }}>Gap Analysis</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              <div style={{ textAlign: "center", padding: "14px 10px", background: "rgba(16,185,129,0.05)", borderRadius: 10, border: "1px solid rgba(16,185,129,0.12)" }}>
+                <div style={{ fontSize: 10, color: "#5a6070", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Current Saving</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: "#10b981", fontFamily: "'Sora', sans-serif" }}>
+                  ₹{(result.current_monthly_saving || 0).toLocaleString()}
+                </div>
+                <div style={{ fontSize: 10, color: "#3d4455", marginTop: 3 }}>/month</div>
+              </div>
+              <div style={{ textAlign: "center", padding: "14px 10px", background: "rgba(200,169,110,0.05)", borderRadius: 10, border: "1px solid rgba(200,169,110,0.12)" }}>
+                <div style={{ fontSize: 10, color: "#5a6070", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Required SIP</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: "#C8A96E", fontFamily: "'Sora', sans-serif" }}>
+                  ₹{(result.required_monthly_saving || 0).toLocaleString()}
+                </div>
+                <div style={{ fontSize: 10, color: "#3d4455", marginTop: 3 }}>@ {result.cagr_moderate} CAGR</div>
+              </div>
+              <div style={{ textAlign: "center", padding: "14px 10px", background: result.feasible ? "rgba(16,185,129,0.05)" : "rgba(239,68,68,0.05)", borderRadius: 10, border: `1px solid ${result.feasible ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)"}` }}>
+                <div style={{ fontSize: 10, color: "#5a6070", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  {result.feasible ? "Monthly Surplus" : "Monthly Gap"}
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: result.feasible ? "#10b981" : "#ef4444", fontFamily: "'Sora', sans-serif" }}>
+                  ₹{result.feasible
+                    ? (result.monthly_surplus || 0).toLocaleString()
+                    : (result.monthly_gap || 0).toLocaleString()}
+                </div>
+                <div style={{ fontSize: 10, color: "#3d4455", marginTop: 3 }}>/month</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Three Scenario Simulation */}
+          {result.scenarios && result.scenarios.length > 0 && (
+            <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 18 }}>
+              <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5a6070", marginBottom: 14, fontWeight: 500 }}>Scenario Simulation</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                {result.scenarios.map(sc => {
+                  const scColor = sc.color || "#C8A96E";
+                  return (
+                    <div key={sc.scenario} style={{ padding: "16px 12px", background: "rgba(255,255,255,0.02)", borderRadius: 10, border: `1px solid ${sc.feasible ? scColor + "33" : "rgba(255,255,255,0.06)"}`, position: "relative", overflow: "hidden" }}>
+                      {sc.feasible && (
+                        <div style={{ position: "absolute", top: 8, right: 8, width: 6, height: 6, borderRadius: "50%", background: scColor }} />
+                      )}
+                      <div style={{ fontSize: 10, color: scColor, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
+                        {sc.scenario}
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: "#4a5060", marginBottom: 3 }}>Monthly SIP needed</div>
+                        <div style={{ fontSize: 19, fontWeight: 700, color: scColor, fontFamily: "'Sora', sans-serif" }}>
+                          ₹{(sc.monthly_needed || 0).toLocaleString()}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 10, color: "#3d4455", marginBottom: 4 }}>@ {sc.cagr} CAGR · {sc.years}yr horizon</div>
+                      <div style={{ fontSize: 11, color: sc.feasible ? "#10b981" : "#5a6070", fontWeight: sc.feasible ? 600 : 400 }}>
+                        {sc.feasible ? "✓ Feasible now" : `Reach in ${sc.recommended_timeline}`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Projection stats */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <StatCard label="Current Coverage" value={`${result.coverage_pct}%`} accent={result.coverage_pct >= 80} />
-            <StatCard label="Projected Value"  value={`₹${((result.projected_value || 0) / 100000).toFixed(1)}L`} />
+            <StatCard label="Projected Corpus" value={`₹${((result.projected_value || 0) / 100000).toFixed(1)}L`} sub="at current savings + moderate CAGR" />
+            <StatCard label="Goal Coverage" value={`${result.coverage_pct}%`} accent={result.coverage_pct >= 80} sub="of target amount covered" />
           </div>
 
-          <div style={{ background: "rgba(200,169,110,0.05)", border: "1px solid rgba(200,169,110,0.15)", borderRadius: 10, padding: 16 }}>
-            <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#C8A96E", marginBottom: 10, fontWeight: 600 }}>Recommended Strategy</div>
-            <div style={{ fontSize: 13, color: "#8a909e", lineHeight: "1.6" }}>
-              <strong style={{ color: "#c0c4d0" }}>Primary:</strong> {result.investment_suggestion}<br />
-              <strong style={{ color: "#c0c4d0" }}>Secondary:</strong> {result.secondary_suggestion}<br />
-              <span style={{ color: "#6a7080" }}>{result.rationale}</span>
+          {/* Investment Strategy */}
+          <div style={{ background: "rgba(200,169,110,0.04)", border: "1px solid rgba(200,169,110,0.14)", borderRadius: 12, padding: 18 }}>
+            <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#C8A96E", marginBottom: 12, fontWeight: 600 }}>Recommended Investment Strategy</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <div style={{ padding: "10px 14px", background: "rgba(255,255,255,0.02)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ fontSize: 10, color: "#5a6070", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Primary</div>
+                <div style={{ fontSize: 13, color: "#c0c4d0", fontWeight: 500 }}>{result.investment_strategy || result.investment_suggestion}</div>
+              </div>
+              <div style={{ padding: "10px 14px", background: "rgba(255,255,255,0.02)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ fontSize: 10, color: "#5a6070", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Secondary</div>
+                <div style={{ fontSize: 13, color: "#c0c4d0", fontWeight: 500 }}>{result.secondary_suggestion}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "#6a7080", lineHeight: 1.6, padding: "8px 12px", background: "rgba(255,255,255,0.02)", borderRadius: 6, borderLeft: "2px solid rgba(200,169,110,0.3)" }}>
+              {result.rationale}
             </div>
           </div>
+
         </div>
       )}
     </div>
@@ -916,7 +1057,7 @@ export default function FinancialAdvisor() {
     { id: "profile", label: "Profile",  Icon: Icon.User    },
     { id: "report",  label: "Report",   Icon: Icon.Chart,   requiresUser: true },
     { id: "chat",    label: "Advisor",  Icon: Icon.Message, requiresUser: true },
-    { id: "goal",    label: "Goals",    Icon: Icon.Target,  requiresUser: true },
+    { id: "goal",    label: "Simulator", Icon: Icon.Target,  requiresUser: true },
   ];
 
   return (

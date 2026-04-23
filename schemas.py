@@ -106,12 +106,20 @@ class ChatSchema(Schema):
             raise ValidationError("query must not be blank.")
 
 
-# ── Goal Planner ───────────────────────────────────────────────────────────
+# ── Goal Feasibility Simulator ─────────────────────────────────────────────
 
 class GoalPlanSchema(Schema):
     user_id = fields.Integer(
         required=True,
         validate=validate.Range(min=1, error="user_id must be a positive integer"),
+    )
+    goal_name = fields.String(
+        load_default="My Goal",
+        validate=validate.Length(
+            min=1, max=200,
+            error="goal_name must be between 1 and 200 characters",
+        ),
+        metadata={"description": "Name/label for this simulation scenario"},
     )
     target_amount = fields.Float(
         required=True,
@@ -125,8 +133,19 @@ class GoalPlanSchema(Schema):
         validate=validate.Range(
             min=0.5, error="time_years must be at least 0.5 (6 months)"
         ),
-        metadata={"description": "Time horizon in years"},
+        metadata={"description": "Target horizon in years"},
     )
+
+    @pre_load
+    def strip_goal_name(self, data, **kwargs):
+        if isinstance(data.get("goal_name"), str):
+            data["goal_name"] = data["goal_name"].strip()
+        return data
+
+    @validates("goal_name")
+    def validate_goal_name_not_blank(self, value, **kwargs):
+        if value is not None and not value.strip():
+            raise ValidationError("goal_name must not be blank.")
 
 
 # ── Singleton instances (import and reuse these) ───────────────────────────
