@@ -1,9 +1,13 @@
-from openai import OpenAI
+import logging
+
+from groq import Groq
 from config import Config
 
-# Initialize OpenAI client
-client = OpenAI(
-    api_key=Config.OPENAI_API_KEY
+logger = logging.getLogger(__name__)
+
+# Initialize Groq client (OpenAI-compatible chat completions interface).
+client = Groq(
+    api_key=Config.GROQ_API_KEY
 )
 
 
@@ -33,15 +37,34 @@ Behavior Rules:
 
 
 # -------------------------------
-# OPENAI CALL WRAPPER
+# GROQ CALL WRAPPER
 # -------------------------------
-def ask_gpt(prompt):
+def ask_gpt(prompt, model=None, max_tokens=None):
+    """
+    Send a single-turn prompt to the Groq chat completions API.
+
+    Parameters
+    ----------
+    prompt : str
+        The user prompt to send alongside the system persona.
+    model : str, optional
+        Groq model id to use. Falls back to ``Config.GROQ_CHAT_MODEL``.
+    max_tokens : int, optional
+        Completion budget. Falls back to ``Config.GROQ_CHAT_MAX_TOKENS``.
+
+    Returns
+    -------
+    tuple[bool, str]
+        ``(True, content)`` on success, ``(False, error_message)`` on failure.
+    """
+    selected_model = model or Config.GROQ_CHAT_MODEL
+    token_budget = max_tokens if max_tokens is not None else Config.GROQ_CHAT_MAX_TOKENS
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=selected_model,
             temperature=0.7,
-            max_tokens=1000,
+            max_tokens=token_budget,
             messages=[
                 {
                     "role": "system",
@@ -54,10 +77,23 @@ def ask_gpt(prompt):
             ]
         )
 
-        return True, response.choices[0].message.content.strip()
+        choice = response.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        content = (choice.message.content or "").strip()
 
-    except Exception as e:
-        return False, str(e)
+        if finish_reason == "length":
+            logger.warning(
+                "ask_gpt: response truncated (finish_reason=length, model=%s, max_tokens=%s, chars=%d)",
+                selected_model,
+                token_budget,
+                len(content),
+            )
+
+        return True, content
+
+    except Exception as exc:
+        logger.exception("ask_gpt: Groq completion failed (model=%s)", selected_model)
+        return False, str(exc)
 
 
 # -------------------------------
@@ -114,7 +150,11 @@ Rules:
 - No generic textbook content.
 """
 
-    return ask_gpt(prompt)
+    return ask_gpt(
+        prompt,
+        model=Config.GROQ_REPORT_MODEL,
+        max_tokens=Config.GROQ_REPORT_MAX_TOKENS,
+    )
 
 
 # -------------------------------
@@ -127,7 +167,8 @@ def chat_with_advisor(profile, user_query, history=None):
     if history and isinstance(history, list):
         for msg in history[-5:]:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            # DB stores "message"; tolerate "content" for forward compatibility.
+            content = msg.get("message") or msg.get("content") or ""
             conversation_context += f"{role}: {content}\n"
 
     prompt = f"""
@@ -154,4 +195,8 @@ Instructions:
 - Be concise and practical
 """
 
-    return ask_gpt(prompt)
+    return ask_gpt(
+        prompt,
+        model=Config.GROQ_CHAT_MODEL,
+        max_tokens=Config.GROQ_CHAT_MAX_TOKENS,
+    )
